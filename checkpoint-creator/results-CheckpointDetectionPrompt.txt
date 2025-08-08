@@ -1,0 +1,83 @@
+use_case:
+  name: "Missing Regulatory Fees for Active Service Lines"
+  description: "Service_Line subscriptions are missing mandatory Reg_Fee, Reg_Fee2, or Reg_Fee3 products within the same package."
+  affected_records: "BRMPACKAGEID: 9731466398-6080682 and 9731466398-6080683"
+  reason_for_leakage: "Validation for complete regulatory fee components was missing during provisioning or billing load."
+  detection_logic_sql: |
+    SELECT BRMPACKAGEID
+    FROM purchases
+    WHERE PRODUCT_NAME LIKE '%Service_Line%'
+    GROUP BY BRMPACKAGEID
+    HAVING COUNT(DISTINCT CASE WHEN PRODUCT_NAME LIKE '%Reg_Fee%' THEN PRODUCT_NAME END) < 3
+  significance_score: 9
+  recommendation: "Introduce a completeness validation check during order entry or billing processing to ensure all required Reg_Fee* components are provisioned."
+
+use_case:
+  name: "Incorrect LINE_TAX Ratio"
+  description: "The number of LINE_TAX products is not aligned with the 10:1 ratio relative to Service_Line subscriptions per BRMPACKAGEID."
+  affected_records: "BRMPACKAGEID: 9731466398-6080682 has 2 LINE_TAX and 1 Service_Line (expected <= 0.1 LINE_TAX)"
+  reason_for_leakage: "Improper enforcement of product ratio rules during product bundling or provisioning."
+  detection_logic_sql: |
+    SELECT BRMPACKAGEID,
+           SUM(CASE WHEN PRODUCT_NAME LIKE '%Service_Line%' THEN 1 ELSE 0 END) AS service_count,
+           SUM(CASE WHEN PRODUCT_NAME LIKE '%LINE_TAX%' THEN 1 ELSE 0 END) AS tax_count
+    FROM purchases
+    GROUP BY BRMPACKAGEID
+    HAVING tax_count > (service_count / 10.0)
+  significance_score: 8
+  recommendation: "Embed ratio validation rules into provisioning workflows and block provisioning if the ratio is exceeded."
+
+use_case:
+  name: "Duplicate Service_Line Charges on Same Start Date"
+  description: "Same Service_Line product is charged multiple times (duplicate BRMPACKAGEID with same price and dates)."
+  affected_records: "BRMPACKAGEIDs: 9731466398-6080682 and 9731466398-6080683 for same account 1691808"
+  reason_for_leakage: "Duplicate provisioning events not de-duplicated before billing."
+  detection_logic_sql: |
+    SELECT HP_ACCT, PRODUCT_NAME, PURCHASE_START_DATE, COUNT(*)
+    FROM purchases
+    WHERE PRODUCT_NAME LIKE '%Service_Line%'
+    GROUP BY HP_ACCT, PRODUCT_NAME, PURCHASE_START_DATE
+    HAVING COUNT(*) > 1
+  significance_score: 7
+  recommendation: "Introduce a de-duplication logic during event processing based on key attributes like account, start date, and product name."
+
+
+use_case:
+  name: "Invalid or Missing Purchase End Dates"
+  description: "Some purchases have a default or invalid PURCHASE_END_DATE (e.g., 01-JAN-1970), which may affect correct billing cycles."
+  affected_records: "All rows with PURCHASE_END_DATE = 01-JAN-1970"
+  reason_for_leakage: "System default date used due to missing or failed end-date update logic."
+  detection_logic_sql: |
+    SELECT *
+    FROM purchases
+    WHERE PURCHASE_END_DATE = TO_DATE('01-JAN-1970', 'DD-MON-YYYY')
+  significance_score: 6
+  recommendation: "Ensure proper lifecycle management of purchases including clean end-date updates and audit checks."
+  
+  
+use_case:
+  name: "Zero Monthly Charges for Active Subscriptions"
+  description: "Some products are marked active but have 0 partner and end-user prices."
+  affected_records: "All Reg_Fee*, LINE_TAX products with STATUS=1 and MRC_PARTNER_PRICE = 0"
+  reason_for_leakage: "Pricing not applied correctly during rating or setup."
+  detection_logic_sql: |
+    SELECT *
+    FROM purchases
+    WHERE STATUS = 1 AND PRODUCT_NAME NOT LIKE '%Service_Line%' 
+      AND (MRC_PARTNER_PRICE = 0 OR MRC_EU_PRICE = 0)
+  significance_score: 7
+  recommendation: "Enforce pricing checks and alerts when active subscriptions have zero-value charges."
+
+
+use_case:
+  name: "Negative Recurring Charges"
+  description: "Validation breach where MRC_PARTNER_PRICE or MRC_EU_PRICE is negative."
+  affected_records: "None found in current dataset, but a rule to prevent in future."
+  reason_for_leakage: "Potential data corruption or manual override."
+  detection_logic_sql: |
+    SELECT *
+    FROM purchases
+    WHERE MRC_PARTNER_PRICE < 0 OR MRC_EU_PRICE < 0
+  significance_score: 5
+  recommendation: "Introduce rule in billing system to disallow negative MRC values at data entry or file load."
+
